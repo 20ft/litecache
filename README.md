@@ -6,7 +6,7 @@ Your best bet for installation is ```pip3 install litecache```. This is Python 3
 
 Use it by constructing the cache then querying through ```query(sql, params, error)``` where sql and params have the same semantics as the sqlite3 (built into Python 3) library functions, and error is the text that gets placed into a ValueError that gets raised if the query returns no values. Again, I'm sure you can hack this to bits quite successfully.
 
-To use: construct the cache passing a directory to place the database files, the name of the database (file), and a source directory. If, on construction, the object creates a blank sqlite3 database (say, 'foo') it will look for a sql script in the source directory with which to initialise the database (ie 'foo.sql'). Query as above but, **important**, pass any SELECT, UPDATE, DELETE or any other operations that will mutate the database through the 'mutate' call and not query. Mutate wipes the *entire* cache to ensure we're not serving out of date results.
+To use: construct the cache passing a directory to place the database files, the name of the database (file), and a source directory. If, on construction, the object creates a blank sqlite3 database (say, 'foo') it will look for a sql script in the source directory with which to initialise the database (ie 'foo.sql'). Query as above but, **important**, pass any SELECT, UPDATE, DELETE or any other operations that will mutate the database through the ```mutate(sql, params)``` call and not query. Mutate wipes the *entire* cache to ensure we're not serving out of date results.
 
 ```
 from litecache.cache import SqlCache
