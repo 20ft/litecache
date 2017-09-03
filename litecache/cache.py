@@ -11,21 +11,23 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""An eventually consistent sqlite cache / async delivery wrapper. """
+"""An 'eventually consistent' sqlite cache / async delivery wrapper. """
 
-import _thread
 import sqlite3
 import logging
+import pathlib
+import _thread
+from threading import Thread, Lock
+from inotify_simple import INotify, flags
 
 
 class SqlCache:
     def __init__(self, directory, name, src_dir):
         # open or make the database
+        self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
         try:
-            self.db = sqlite3.connect(directory + "/" + name + ".sqlite3",
-                                      isolation_level='EXCLUSIVE',
-                                      check_same_thread=False)
+            self.db = sqlite3.connect(self.filename, isolation_level='EXCLUSIVE', check_same_thread=False)
         except:
             raise RuntimeError("Couldn't open %s.sqlite3, fatal." % name)
 
@@ -42,42 +44,74 @@ class SqlCache:
         self.cache = {}
 
         # locking access to the cache
-        self.lock = _thread.allocate_lock()
+        self.lock = Lock()
+
+        # watching for changes
+        self.running = True
+        self.inotify = INotify()
+        self.inotify.add_watch(self.filename, flags.MODIFY | flags.CLOSE_WRITE | flags.CLOSE_NOWRITE)
+        self.watch = Thread(group=None, target=self.watch, name="SqlCache: " + name)
+        self.watch.start()
+        logging.debug("Caching SQL for: " + name)
 
     def underlying(self):
         return self.db
 
     def close(self):
-        self.lock.acquire()  # ensure any in-flight transactions are done
+        self.lock.acquire()  # ensure any in-flight mutations are done
+        self.lock.release()
+        self.running = False  # will cause the notify thread to exit the loop when it next times out
         self.db.close()
+        self.watch.join()  # wait for watch to actually stop
 
-    def query(self, sql, params, error):
-        # is it?
+    def query(self, sql, params):
+        """Synchronously query and cache"""
         self.lock.acquire()
         try:
-            return self.cache[(sql, params)]
+            return self.cache[(sql, params, True)]  # True implies this was an 'all rows' query
         except KeyError:  # not cached, execute the sql
+            cursor = self.db.execute(sql, params)
+            results = cursor.fetchall()
+            self.cache[(sql, params, True)] = results  # cache for next time
+            return results
+        finally:
+            self.lock.release()
+
+    def query_one(self, sql, params, error):
+        """Expects to find at least one row in the result set and borks if it doesn't"""
+        # I use this for a KV store
+        self.lock.acquire()
+        try:
+            return self.cache[(sql, params, False)]  # a single row query
+        except KeyError:
             cursor = self.db.execute(sql, params)
             row = cursor.fetchone()
             if row is None:  # zero rows
                 raise ValueError(error)
-            else:  # cache for next time
-                self.cache[(sql, params)] = row
+            else:
+                self.cache[(sql, params, False)] = row
             return row
         finally:
             self.lock.release()
 
-    def mutate(self, sql, params):
+    def async(self, sql, params):
         # do the update on a background thread
         self.lock.acquire()
         _thread.start_new_thread(SqlCache._mutate, (self, sql, params))
 
+    def watch(self):
+        # watches for changes on the underlying DB and blows away the cache if it sees one
+        while self.running:
+            for event in self.inotify.read(timeout=1):
+                logging.debug("File notification on database, clearing cache: " + self.filename)
+                self.cache = {}
+        logging.debug("Watch thread closed for: " + self.filename)
+
     def _mutate(self, sql, params):
         # do the mutation inside a transaction
+        # note that the cache will be cleared by 'watch' when it detects the write on the database
         try:
             self.db.execute(sql, params)
             self.db.commit()
-            # flush the entire cache
-            self.cache = {}
         finally:
             self.lock.release()
