@@ -15,14 +15,13 @@
 
 import sqlite3
 import logging
-import pathlib
 import _thread
+import os
 from threading import Thread, Lock
-from inotify_simple import INotify, flags
 
 
 class SqlCache:
-    def __init__(self, directory, name, src_dir):
+    def __init__(self, directory, name, create_sql):
         # open or make the database
         self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
@@ -34,11 +33,9 @@ class SqlCache:
         # make sure the database has been initialised
         cursor = self.db.execute("SELECT * FROM sqlite_master WHERE type='table'")
         if cursor.fetchone() is None:
-            with open("%s%s.sql" % (src_dir, name)) as script_file:
-                script = script_file.read()
-                self.db.executescript(script)
-                self.db.commit()
-                logging.info("Created new database: " + name)
+            self.db.executescript(create_sql)
+            self.db.commit()
+            logging.info("Created new database: " + name)
 
         # the actual cache
         self.cache = {}
@@ -48,8 +45,20 @@ class SqlCache:
 
         # watching for changes
         self.running = True
-        self.inotify = INotify()
-        self.inotify.add_watch(self.filename, flags.MODIFY | flags.CLOSE_WRITE | flags.CLOSE_NOWRITE)
+        try:
+            from inotify_simple import INotify, flags
+            self.mac = False
+            self.inotify = INotify()
+            self.inotify.add_watch(self.filename, flags.MODIFY | flags.CLOSE_WRITE | flags.CLOSE_NOWRITE)
+
+        except OSError:  # no libc.so.6 on OSX ... try this
+            from select import kqueue, kevent, KQ_FILTER_VNODE, KQ_EV_ADD, KQ_EV_CLEAR, KQ_NOTE_WRITE
+            self.mac = True
+            self.fd = os.open(self.filename, os.O_RDONLY)
+            self.kq = kqueue()
+            ke = kevent(self.fd, filter=KQ_FILTER_VNODE, flags=KQ_EV_ADD | KQ_EV_CLEAR, fflags=KQ_NOTE_WRITE)
+            self.kq.control([ke], 0)
+
         self.watch = Thread(group=None, target=self.watch, name="SqlCache: " + name)
         self.watch.start()
         logging.debug("Caching SQL for: " + name)
@@ -60,9 +69,11 @@ class SqlCache:
     def close(self):
         self.lock.acquire()  # ensure any in-flight mutations are done
         self.lock.release()
-        self.running = False  # will cause the notify thread to exit the loop when it next times out
         self.db.close()
+        self.running = False  # will cause the notify thread to exit the loop when it next times out
         self.watch.join()  # wait for watch to actually stop
+        if self.mac:
+            os.close(self.fd)
 
     def query(self, sql, params):
         """Synchronously query and cache"""
@@ -78,11 +89,11 @@ class SqlCache:
             self.lock.release()
 
     def query_one(self, sql, params, error):
-        """Expects to find at least one row in the result set and borks if it doesn't"""
+        """Synchronously query and cache for exactly one row"""
         # I use this for a KV store
         self.lock.acquire()
         try:
-            return self.cache[(sql, params, False)]  # a single row query
+            return self.cache[(sql, params, False)]  # False implies a single row query
         except KeyError:
             cursor = self.db.execute(sql, params)
             row = cursor.fetchone()
@@ -102,7 +113,7 @@ class SqlCache:
     def watch(self):
         # watches for changes on the underlying DB and blows away the cache if it sees one
         while self.running:
-            for event in self.inotify.read(timeout=1):
+            for event in self.kq.control(None, 256, 1) if self.mac else self.inotify.read(timeout=1):
                 logging.debug("File notification on database, clearing cache: " + self.filename)
                 self.cache = {}
         logging.debug("Watch thread closed for: " + self.filename)

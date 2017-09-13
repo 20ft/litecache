@@ -15,7 +15,7 @@
 from setuptools import setup
 
 setup(name='litecache',
-      version='0.6.0',
+      version='1.0.0',
       author='David Preece',
       author_email='davep@polymath.tech',
       url='https://polymath.tech',
@@ -23,17 +23,17 @@ setup(name='litecache',
       packages=['litecache'],
       install_requires=['inotify_simple'],
       description='Thread safe query cache and async write for sqlite databases',
-      long_description="A brutally simple map of (SQL, (params,)) to a single result with writes delivered " +
-      								 "on a separate thread for running non-blocking applications on slow drives.",
-      keywords='sqlite sqlite3 asynchronous sql query cache',
+      long_description="A brutally simple map of (SQL, (params,)) to a single result with writes delivered "
+                       "on a separate thread for running non-blocking applications on slow drives.",
+      keywords='sqlite sqlite3 asynchronous sql query cache inotify kqueue kevent',
       classifiers=[
           'Development Status :: 5 - Production/Stable',
           'Intended Audience :: Developers',
           'Intended Audience :: Information Technology',
           'License :: OSI Approved :: BSD License',
-					'Topic :: Database',
-					'Topic :: Software Development :: Libraries :: Python Modules',
-					'Topic :: Utilities',
+          'Topic :: Database',
+          'Topic :: Software Development :: Libraries :: Python Modules',
+          'Topic :: Utilities',
           'Programming Language :: Python :: 3.4',
           'Programming Language :: Python :: 3.5',
           'Programming Language :: Python :: 3.6'
