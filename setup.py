@@ -15,7 +15,7 @@
 from setuptools import setup
 
 setup(name='litecache',
-      version='1.0.0',
+      version='1.0.2',
       author='David Preece',
       author_email='davep@polymath.tech',
       url='https://polymath.tech',

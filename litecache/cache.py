@@ -67,6 +67,7 @@ class SqlCache:
         return self.db
 
     def close(self):
+        logging.debug("Closing cache for: " + self.filename)
         self.lock.acquire()  # ensure any in-flight mutations are done
         self.lock.release()
         self.db.close()
@@ -74,6 +75,7 @@ class SqlCache:
         self.watch.join()  # wait for watch to actually stop
         if self.mac:
             os.close(self.fd)
+        logging.debug("Closed: " + self.filename)
 
     def query(self, sql, params):
         """Synchronously query and cache"""
@@ -113,7 +115,7 @@ class SqlCache:
     def watch(self):
         # watches for changes on the underlying DB and blows away the cache if it sees one
         while self.running:
-            for event in self.kq.control(None, 256, 1) if self.mac else self.inotify.read(timeout=1):
+            for event in self.kq.control(None, 256, 1) if self.mac else self.inotify.read(timeout=2000):
                 logging.debug("File notification on database, clearing cache: " + self.filename)
                 self.cache = {}
         logging.debug("Watch thread closed for: " + self.filename)
