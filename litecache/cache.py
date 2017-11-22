@@ -70,8 +70,8 @@ class SqlCache:
         logging.debug("Closing cache for: " + self.filename)
         self.lock.acquire()  # ensure any in-flight mutations are done
         self.lock.release()
-        self.db.close()
-        self.running = False  # will cause the notify thread to exit the loop when it next times out
+        self.running = False  # will cause the notify thread to exit the loop
+        self.db.close()  # will cause an event to be fired
         self.watch.join()  # wait for watch to actually stop
         if self.mac:
             os.close(self.fd)
@@ -115,7 +115,9 @@ class SqlCache:
     def watch(self):
         # watches for changes on the underlying DB and blows away the cache if it sees one
         while self.running:
-            for event in self.kq.control(None, 256, 1) if self.mac else self.inotify.read(timeout=2000):
+            for _ in self.kq.control(None, 256, 1) if self.mac else self.inotify.read():
+                if not self.running:
+                    break
                 logging.debug("File notification on database, clearing cache: " + self.filename)
                 self.cache = {}
         logging.debug("Watch thread closed for: " + self.filename)
