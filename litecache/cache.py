@@ -23,6 +23,7 @@ from threading import Thread, Lock
 class SqlCache:
     def __init__(self, directory, name, create_sql):
         # open or make the database
+        self.name = name
         self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
         try:
@@ -59,7 +60,7 @@ class SqlCache:
             ke = kevent(self.fd, filter=KQ_FILTER_VNODE, flags=KQ_EV_ADD | KQ_EV_CLEAR, fflags=KQ_NOTE_WRITE)
             self.kq.control([ke], 0)
 
-        self.watch = Thread(group=None, target=self.watch, name="SqlCache: " + name)
+        self.watch = Thread(group=None, target=self.watch, name="SqlCache-watch:" + name, daemon=True)
         self.watch.start()
         logging.debug("Caching SQL for: " + name)
 
@@ -110,7 +111,9 @@ class SqlCache:
     def async(self, sql, params):
         # do the update on a background thread
         self.lock.acquire()
-        _thread.start_new_thread(SqlCache._mutate, (self, sql, params))
+        Thread(target=SqlCache._mutate,
+               args=(self, sql, params),
+               name="SqlCache-mutate:" + self.name).start()
 
     def watch(self):
         # watches for changes on the underlying DB and blows away the cache if it sees one
