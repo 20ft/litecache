@@ -11,13 +11,12 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-"""An 'eventually consistent' sqlite cache / async delivery wrapper. """
-
 import sqlite3
 import logging
 import _thread
 import os
-from threading import Thread, Lock
+from threading import Thread
+from multiprocessing import Queue, Process
 
 
 class SqlCache:
@@ -27,9 +26,9 @@ class SqlCache:
         self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
         try:
-            self.db = sqlite3.connect(self.filename, isolation_level='EXCLUSIVE', check_same_thread=False)
-        except:
-            raise RuntimeError("Couldn't open %s.sqlite3, fatal." % name)
+            self.db = sqlite3.connect(self.filename)
+        except BaseException as e:
+            raise RuntimeError("Couldn't open %s.sqlite3, fatal: %s" % (name, str(e)))
 
         # make sure the database has been initialised
         cursor = self.db.execute("SELECT * FROM sqlite_master WHERE type='table'")
@@ -38,98 +37,32 @@ class SqlCache:
             self.db.commit()
             logging.info("Created new database: " + name)
 
-        # the actual cache
-        self.cache = {}
-
-        # locking access to the cache
-        self.lock = Lock()
-
-        # watching for changes
-        self.running = True
-        try:
-            from inotify_simple import INotify, flags
-            self.mac = False
-            self.inotify = INotify()
-            self.inotify.add_watch(self.filename, flags.MODIFY | flags.CLOSE_WRITE | flags.CLOSE_NOWRITE)
-
-        except OSError:  # no libc.so.6 on OSX ... try this
-            from select import kqueue, kevent, KQ_FILTER_VNODE, KQ_EV_ADD, KQ_EV_CLEAR, KQ_NOTE_WRITE
-            self.mac = True
-            self.fd = os.open(self.filename, os.O_RDONLY)
-            self.kq = kqueue()
-            ke = kevent(self.fd, filter=KQ_FILTER_VNODE, flags=KQ_EV_ADD | KQ_EV_CLEAR, fflags=KQ_NOTE_WRITE)
-            self.kq.control([ke], 0)
-
-        self.watch = Thread(group=None, target=self.watch, name="SqlCache-watch:" + name, daemon=True)
-        self.watch.start()
-        logging.debug("Caching SQL for: " + name)
+        # set up various options
+        self.db.execute("PRAGMA AUTO_VACUUM = FULL")
+        self.db.execute("PRAGMA AUTOMATIC_INDEX = False")
+        self.db.execute("PRAGMA ENCODING = 'UTF-8'")
+        self.db.execute("PRAGMA SYNCHRONOUS = OFF")
+        self.db.execute("PRAGMA THREADS = 0")
+        self.db.execute("PRAGMA JOURNAL_MODE = MEMORY")
+        self.db.execute("PRAGMA TEMP_STORE = MEMORY")
 
     def underlying(self):
         return self.db
 
     def close(self):
-        logging.debug("Closing cache for: " + self.filename)
-        self.lock.acquire()  # ensure any in-flight mutations are done
-        self.lock.release()
-        self.running = False  # will cause the notify thread to exit the loop
-        self.db.close()  # will cause an event to be fired
-        self.watch.join()  # wait for watch to actually stop
-        if self.mac:
-            os.close(self.fd)
-        logging.debug("Closed: " + self.filename)
+        self.db.close()
 
     def query(self, sql, params):
-        """Synchronously query and cache"""
-        self.lock.acquire()
-        try:
-            return self.cache[(sql, params, True)]  # True implies this was an 'all rows' query
-        except KeyError:  # not cached, execute the sql
-            cursor = self.db.execute(sql, params)
-            results = cursor.fetchall()
-            self.cache[(sql, params, True)] = results  # cache for next time
-            return results
-        finally:
-            self.lock.release()
+        """Query and return results"""
+        cursor = self.db.execute(sql, params)
+        results = cursor.fetchall()
+        return results
 
     def query_one(self, sql, params, error):
-        """Synchronously query and cache for exactly one row"""
+        """Query and return results for exactly one row"""
         # I use this for a KV store
-        self.lock.acquire()
-        try:
-            return self.cache[(sql, params, False)]  # False implies a single row query
-        except KeyError:
-            cursor = self.db.execute(sql, params)
-            row = cursor.fetchone()
-            if row is None:  # zero rows
-                raise ValueError(error)
-            else:
-                self.cache[(sql, params, False)] = row
-            return row
-        finally:
-            self.lock.release()
-
-    def async(self, sql, params):
-        # do the update on a background thread
-        self.lock.acquire()
-        Thread(target=SqlCache._mutate,
-               args=(self, sql, params),
-               name="SqlCache-mutate:" + self.name).start()
-
-    def watch(self):
-        # watches for changes on the underlying DB and blows away the cache if it sees one
-        while self.running:
-            for _ in self.kq.control(None, 256, 1) if self.mac else self.inotify.read():
-                if not self.running:
-                    break
-                logging.debug("File notification on database, clearing cache: " + self.filename)
-                self.cache = {}
-        logging.debug("Watch thread closed for: " + self.filename)
-
-    def _mutate(self, sql, params):
-        # do the mutation inside a transaction
-        # note that the cache will be cleared by 'watch' when it detects the write on the database
-        try:
-            self.db.execute(sql, params)
-            self.db.commit()
-        finally:
-            self.lock.release()
+        cursor = self.db.execute(sql, params)
+        row = cursor.fetchone()
+        if row is None:  # zero rows
+            raise ValueError(error)
+        return row
