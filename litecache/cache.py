@@ -38,27 +38,27 @@ class SqlCache:
             logging.info("Created new database: " + name)
 
         # set up various options
-        self.db.execute("PRAGMA AUTO_VACUUM = FULL")
         self.db.execute("PRAGMA AUTOMATIC_INDEX = False")
         self.db.execute("PRAGMA ENCODING = 'UTF-8'")
         self.db.execute("PRAGMA SYNCHRONOUS = OFF")
-        self.db.execute("PRAGMA THREADS = 0")
         self.db.execute("PRAGMA JOURNAL_MODE = MEMORY")
         self.db.execute("PRAGMA TEMP_STORE = MEMORY")
 
-    def underlying(self):
-        return self.db
-
     def close(self):
         self.db.close()
+        
+    def mutate(self, sql, params=()):
+        """Execute SQL that actually changes the database"""
+        self.db.execute(sql, params)
+        self.db.commit()
 
-    def query(self, sql, params):
+    def query(self, sql, params=()):
         """Query and return results"""
         cursor = self.db.execute(sql, params)
         results = cursor.fetchall()
         return results
 
-    def query_one(self, sql, params, error):
+    def query_one(self, sql, params=(), error=''):
         """Query and return results for exactly one row"""
         # I use this for a KV store
         cursor = self.db.execute(sql, params)
