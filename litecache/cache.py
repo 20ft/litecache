@@ -44,7 +44,7 @@ class SqlCache:
         self.db.execute("PRAGMA JOURNAL_MODE = MEMORY")
         self.db.execute("PRAGMA TEMP_STORE = MEMORY")
 
-    def close(self):
+    def __del__(self):
         self.db.close()
         
     def mutate(self, sql, params=()):
