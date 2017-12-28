@@ -26,7 +26,7 @@ class SqlCache:
         self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
         try:
-            self.db = sqlite3.connect(self.filename)
+            self.db = sqlite3.connect(self.filename, check_same_thread=False)
         except BaseException as e:
             raise RuntimeError("Couldn't open %s.sqlite3, fatal: %s" % (name, str(e)))
 
