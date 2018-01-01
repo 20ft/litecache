@@ -129,5 +129,5 @@ class SqlCache:
                 return
 
             # go
-            logging.debug("Updating SQL: " + record[0])
+            logging.debug("Updating SQL: " + str(record))
             rw_sql.execute(record[0], record[1])
