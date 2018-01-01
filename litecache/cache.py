@@ -17,7 +17,8 @@ import sqlite3
 import logging
 import _thread
 import os
-from threading import Thread, Lock
+from threading import Thread
+from multiprocessing import Queue, Process
 
 
 class SqlCache:
@@ -27,7 +28,7 @@ class SqlCache:
         self.filename = directory + "/" + name + ".sqlite3"
         self.db = None
         try:
-            self.db = sqlite3.connect(self.filename, isolation_level='EXCLUSIVE', check_same_thread=False)
+            self.db = sqlite3.connect('file:%s?mode=ro&nolock=1' % self.filename, uri=True, check_same_thread=False)
         except:
             raise RuntimeError("Couldn't open %s.sqlite3, fatal." % name)
 
@@ -40,9 +41,6 @@ class SqlCache:
 
         # the actual cache
         self.cache = {}
-
-        # locking access to the cache
-        self.lock = Lock()
 
         # watching for changes
         self.running = True
@@ -60,27 +58,28 @@ class SqlCache:
             ke = kevent(self.fd, filter=KQ_FILTER_VNODE, flags=KQ_EV_ADD | KQ_EV_CLEAR, fflags=KQ_NOTE_WRITE)
             self.kq.control([ke], 0)
 
-        self.watch = Thread(group=None, target=self.watch, name="SqlCache-watch:" + name, daemon=True)
+        self.watch = Thread(group=None, target=self._watch, name="SqlCache-watch:" + name, daemon=True)
         self.watch.start()
         logging.debug("Caching SQL for: " + name)
 
-    def underlying(self):
-        return self.db
+        # async updates
+        self.update_queue = Queue()
+        self.update_process = Process(target=SqlCache._updates, args=(self.filename, self.update_queue))
+        self.update_process.start()
 
     def close(self):
         logging.debug("Closing cache for: " + self.filename)
-        self.lock.acquire()  # ensure any in-flight mutations are done
-        self.lock.release()
         self.running = False  # will cause the notify thread to exit the loop
-        self.db.close()  # will cause an event to be fired
+        self.update_queue.put(None)  # update thread too
         self.watch.join()  # wait for watch to actually stop
+        self.update_process.join()  # update thread too
         if self.mac:
             os.close(self.fd)
+        self.db.close()
         logging.debug("Closed: " + self.filename)
 
-    def query(self, sql, params):
+    def query(self, sql, params=()):
         """Synchronously query and cache"""
-        self.lock.acquire()
         try:
             return self.cache[(sql, params, True)]  # True implies this was an 'all rows' query
         except KeyError:  # not cached, execute the sql
@@ -88,13 +87,10 @@ class SqlCache:
             results = cursor.fetchall()
             self.cache[(sql, params, True)] = results  # cache for next time
             return results
-        finally:
-            self.lock.release()
 
-    def query_one(self, sql, params, error):
+    def query_one(self, sql, params=(), error=b''):
         """Synchronously query and cache for exactly one row"""
         # I use this for a KV store
-        self.lock.acquire()
         try:
             return self.cache[(sql, params, False)]  # False implies a single row query
         except KeyError:
@@ -105,31 +101,33 @@ class SqlCache:
             else:
                 self.cache[(sql, params, False)] = row
             return row
-        finally:
-            self.lock.release()
 
-    def async(self, sql, params):
-        # do the update on a background thread
-        self.lock.acquire()
-        Thread(target=SqlCache._mutate,
-               args=(self, sql, params),
-               name="SqlCache-mutate:" + self.name).start()
+    def mutate(self, sql, params):
+        """Queue the given SQL and it's parameters to be written to the database"""
+        self.update_queue.put((sql, params))
 
-    def watch(self):
+    def _watch(self):
         # watches for changes on the underlying DB and blows away the cache if it sees one
         while self.running:
             for _ in self.kq.control(None, 256, 1) if self.mac else self.inotify.read():
                 if not self.running:
                     break
-                logging.debug("File notification on database, clearing cache: " + self.filename)
                 self.cache = {}
         logging.debug("Watch thread closed for: " + self.filename)
 
-    def _mutate(self, sql, params):
-        # do the mutation inside a transaction
-        # note that the cache will be cleared by 'watch' when it detects the write on the database
-        try:
-            self.db.execute(sql, params)
-            self.db.commit()
-        finally:
-            self.lock.release()
+    @staticmethod
+    def _updates(filename, queue):
+        # listens on the queue for SQL to write to the database
+        rw_sql = sqlite3.connect(filename, isolation_level=None)  # rw
+        while True:
+            record = queue.get()
+
+            # exit?
+            if record is None:
+                rw_sql.close()
+                logging.debug("Update thread closed for: " + filename)
+                return
+
+            # go
+            logging.debug("Updating SQL: " + record[0])
+            rw_sql.execute(record[0], record[1])
