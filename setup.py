@@ -15,7 +15,7 @@
 from setuptools import setup
 
 setup(name='litecache',
-      version='1.0.5',
+      version='1.0.6',
       author='David Preece',
       author_email='davep@20ft.nz',
       url='https://20ft.nz',
