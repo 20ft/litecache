@@ -72,6 +72,9 @@ class SqlCache:
 
     @staticmethod
     def _updates(filename, queue):
+        # really not very important
+        os.setpriority(os.PRIO_PROCESS, 0, 15)
+        
         # listens on the queue for SQL to write to the database
         rw_sql = sqlite3.connect(filename, isolation_level=None)  # rw
         while True:
