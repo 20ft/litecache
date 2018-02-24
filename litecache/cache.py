@@ -18,7 +18,7 @@ import logging
 import _thread
 import os
 from threading import Thread
-from multiprocessing import Queue, Process
+from queue import Queue
 
 
 class SqlCache:
@@ -41,13 +41,13 @@ class SqlCache:
 
         # async updates
         self.update_queue = Queue()
-        self.update_process = Process(target=SqlCache._updates, args=(self.filename, self.update_queue))
-        self.update_process.start()
+        self.update_thread = Thread(target=SqlCache._updates, args=(self.filename, self.update_queue))
+        self.update_thread.start()
 
     def close(self):
         logging.debug("Closing: " + self.filename)
         self.update_queue.put(None)  # update thread too
-        self.update_process.join()  # update thread too
+        self.update_thread.join()  # update thread too
         self.db.close()
         logging.debug("Closed: " + self.filename)
 
@@ -72,9 +72,6 @@ class SqlCache:
 
     @staticmethod
     def _updates(filename, queue):
-        # really not very important
-        os.setpriority(os.PRIO_PROCESS, 0, 15)
-        
         # listens on the queue for SQL to write to the database
         rw_sql = sqlite3.connect(filename, isolation_level=None)  # rw
         while True:
